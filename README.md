@@ -48,6 +48,28 @@ API docs: `/api/docs`.
 
 AI agents: set `PT_LLM_PROVIDER=anthropic` and `PT_ANTHROPIC_API_KEY=…` (or `openai` + `PT_OPENAI_API_KEY`).
 
+## Deploy on Railway
+
+The repo is Railway-ready (`railway.json` + `Dockerfile`; the app listens on `$PORT`, accepts Railway's `postgresql://` URL and fixes volume ownership at startup).
+
+1. **New Project → Deploy from GitHub repo** → select this repository. Railway builds the `Dockerfile`.
+2. **+ New → Database → PostgreSQL**.
+3. On the app service → **Settings → Volumes**: add a volume mounted at **`/data`** (uploads, SBOMs, scanner caches).
+4. On the app service → **Variables**:
+
+   | Variable | Value |
+   |---|---|
+   | `PT_DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+   | `PT_JWT_SECRET` | output of `python -c "import secrets;print(secrets.token_urlsafe(48))"` |
+   | `PT_ENCRYPTION_KEY` | output of `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` — keep a backup |
+   | `PT_LLM_PROVIDER` / `PT_ANTHROPIC_API_KEY` | optional, enables the AI agents |
+
+5. **Settings → Networking → Generate Domain**, then open it and register your organization.
+
+Scans run inside the app service by default. To scale scanning, add a Redis database, set `PT_REDIS_URL=${{Redis.REDIS_URL}}`
+on the app, and add a second service from the same repo with start command `python -m app.worker`, the same variables and the same volume.
+Neo4j is optional (`PT_NEO4J_URI` etc.); the attack graph works without it.
+
 ## Run with Docker Compose
 
 ```bash

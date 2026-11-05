@@ -34,8 +34,8 @@ RUN pip install -r requirements.txt
 COPY --from=tools /out/ /opt/pt-tools/
 COPY backend/ ./
 COPY --from=web /web/out ./web
-USER pt
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod 755 /app/docker-entrypoint.sh && chown -R pt:pt /data
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')"
-# migrate once, then start workers with auto-migration disabled (avoids concurrent Alembic runs)
-CMD ["sh", "-c", "alembic upgrade head && PT_AUTO_MIGRATE=false exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --workers 2"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('PORT','8000'))"
+# Entrypoint starts as root only to fix volume ownership, then drops to user `pt` (see docker-entrypoint.sh).
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

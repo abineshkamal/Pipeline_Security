@@ -55,7 +55,16 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        return self.database_url or f"sqlite:///{(self.data_dir / 'pipelinetrust.db').as_posix()}"
+        return normalize_db_url(self.database_url) or f"sqlite:///{(self.data_dir / 'pipelinetrust.db').as_posix()}"
+
+
+def normalize_db_url(url: str) -> str:
+    """Accept provider-style URLs (Railway/Heroku `postgres://` / `postgresql://`) and select the psycopg 3 driver."""
+    url = (url or "").strip()
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
 
 
 @lru_cache
