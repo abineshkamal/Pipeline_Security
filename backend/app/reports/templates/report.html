@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PipelineTrust Report - {{ d.project.name }}</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2433;--muted:#5d6779;--line:#dfe3ea;--crit:#b3261e;--high:#d9480f;--med:#b7791f;--low:#2b6cb0;--info:#718096;--pass:#2f855a;--fail:#c53030;--na:#718096;--man:#805ad5;--accent:#2d3a8c}
+*{box-sizing:border-box}body{margin:0;font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
+header.cover{background:var(--accent);color:#fff;padding:32px 24px;border-radius:12px}
+header.cover h1{margin:0 0 4px;font-size:28px}header.cover .sub{opacity:.85}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin:16px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.kpi .v{font-size:28px;font-weight:700}.kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+h2{margin:32px 0 12px;font-size:20px;border-bottom:2px solid var(--line);padding-bottom:6px}h3{margin:20px 0 8px;font-size:16px}
+table{width:100%;border-collapse:collapse;background:var(--card)}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:#eef1f6;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+.b{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;white-space:nowrap}
+.critical{background:var(--crit)}.high{background:var(--high)}.medium{background:var(--med)}.low{background:var(--low)}.info{background:var(--info)}
+.PASS{background:var(--pass)}.FAIL{background:var(--fail)}.NOT_ASSESSED,.NOT_APPLICABLE{background:var(--na)}.NEEDS_MANUAL_VALIDATION{background:var(--man)}
+pre{background:#0f172a;color:#e2e8f0;padding:10px;border-radius:6px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.finding{border-left:4px solid var(--line);margin:12px 0}.finding.sev-critical{border-left-color:var(--crit)}.finding.sev-high{border-left-color:var(--high)}
+.finding.sev-medium{border-left-color:var(--med)}.finding.sev-low{border-left-color:var(--low)}
+.meta{color:var(--muted);font-size:12px}.muted{color:var(--muted)}.note{background:#fff8e1;border:1px solid #f6e05e;padding:10px 12px;border-radius:8px}
+.ai{background:#f3f0ff;border:1px solid #d6bcfa;padding:10px 12px;border-radius:8px}
+ol.path{margin:6px 0;padding-left:20px}code{background:#eef1f6;padding:0 4px;border-radius:4px;font-size:12px}
+@media print{body{background:#fff}.card,.finding{break-inside:avoid}header.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body><div class="wrap">
+<header class="cover">
+  <div class="sub">PipelineTrust · AI-Powered CI/CD Security Assurance</div>
+  <h1>CI/CD Security Assessment Report</h1>
+  <div>{{ d.project.name }}{% if d.project.repo %} · {{ d.project.repo }}{% endif %}</div>
+  <div class="sub">Framework: OWASP Top 10 CI/CD Security Risks · Scan {{ scan.id[:8] }}{% if scan.commit_sha %} · commit {{ scan.commit_sha[:12] }}{% endif %} · Generated {{ generated }}</div>
+</header>
+
+<div class="grid">
+  <div class="card kpi"><div class="l">Posture score</div><div class="v">{{ summary.posture_score if summary.posture_score is not none else "N/A" }}</div><div class="meta">Grade {{ summary.grade }}</div></div>
+  {% for s in ["critical","high","medium","low"] %}
+  <div class="card kpi"><div class="l">{{ s }}</div><div class="v">{{ (summary.severity_counts or {}).get(s, 0) }}</div></div>
+  {% endfor %}
+  <div class="card kpi"><div class="l">Automated coverage</div><div class="v">{{ (summary.coverage or {}).get("percent") }}%</div><div class="meta">{{ (summary.coverage or {}).get("controls") }} controls</div></div>
+</div>
+
+<h2>1. Executive summary</h2>
+{% if ai.report %}
+<div class="card"><p>{{ ai.report.executive_summary }}</p>
+{% if ai.report.recommended_actions %}<h3>Recommended actions</h3><ol>{% for a in ai.report.recommended_actions %}<li>{{ a }}</li>{% endfor %}</ol>{% endif %}
+<p class="meta">Summary source: {{ "AI (" ~ ai.provider ~ " / " ~ ai.model ~ ")" if ai.mode == "llm" else "deterministic template (no LLM configured)" }}. {{ ai.disclaimer }}</p></div>
+{% else %}<div class="card muted">AI analysis was not run for this scan.</div>{% endif %}
+
+<h2>2. OWASP CI/CD category results</h2>
+<table><thead><tr><th>Category</th><th>Status</th><th>Score</th><th>Pass</th><th>Fail</th><th>Not assessed</th><th>Manual</th><th>N/A</th><th>Findings</th></tr></thead><tbody>
+{% for c in summary.categories or [] %}
+<tr><td><b>{{ c.category }}</b><br><span class="meta">{{ c.name }}</span></td><td><span class="b {{ c.status }}">{{ c.status.replace("_"," ") }}</span></td>
+<td>{{ c.score if c.score is not none else "N/A" }}</td><td>{{ c.pass }}</td><td>{{ c.fail }}</td><td>{{ c.not_assessed }}</td><td>{{ c.manual }}</td><td>{{ c.not_applicable }}</td><td>{{ c.findings }}</td></tr>
+{% endfor %}</tbody></table>
+
+{% if summary.coverage_notes %}<h3>Assessment coverage and limitations</h3><div class="note"><ul>{% for n in summary.coverage_notes %}<li>{{ n }}</li>{% endfor %}</ul></div>{% endif %}
+
+<h2>3. Attack paths</h2>
+{% if paths %}
+<p class="muted">Each path is computed from deterministic findings (every attacker-entry edge references concrete evidence). Narratives are advisory.</p>
+{% for p in paths[:12] %}
+<div class="card" style="margin:10px 0"><b>{{ p.id }}</b> · risk <b>{{ p.risk }}</b> · impact: <b>{{ p.impact }}</b>{% if p.gated_by %} · partially gated by {{ p.gated_by|join(", ") }}{% endif %}
+<ol class="path">{% for l in p.labels %}<li>{{ l }}</li>{% endfor %}</ol>
+<div class="meta">Evidence: {% for fid in p.finding_ids or [] %}{% if fid in fid_index %}<a href="#f{{ fid_index[fid] }}">F-{{ fid_index[fid] }}</a> {% endif %}{% endfor %}</div>
+{% set n = (ai.narratives or {}).get(p.id) %}{% if n %}<div class="ai" style="margin-top:8px">{{ n.narrative }}{% if n.break_point %}<br><b>Break the chain:</b> {{ n.break_point }}{% endif %}</div>{% endif %}
+</div>
+{% endfor %}
+{% else %}<div class="card muted">No evidence-backed attack paths were identified.</div>{% endif %}
+
+<h2>4. Control matrix and findings by category</h2>
+{% for cat, name in categories.items() %}
+<h3>{{ cat }} - {{ name }}</h3>
+<p class="meta">Objective: {{ objectives[cat] }} · <a href="{{ cat_refs[cat] }}">OWASP reference</a></p>
+<table><thead><tr><th>Rule</th><th>Control</th><th>Status</th><th>Notes / evidence</th></tr></thead><tbody>
+{% for c in controls_by_cat.get(cat, []) %}
+<tr><td><code>{{ c.rule_id }}</code></td><td>{{ c.title }}</td><td><span class="b {{ c.status }}">{{ c.status.replace("_"," ") }}</span>{% if c.finding_count %} ({{ c.finding_count }}){% endif %}</td>
+<td class="meta">{{ c.note }}{% for e in c.evidence[:3] %}<br>{{ e }}{% endfor %}</td></tr>
+{% endfor %}</tbody></table>
+{% for f in by_cat.get(cat, []) %}
+{% set i = fid_index[f.id] %}
+<div class="card finding sev-{{ f.severity }}" id="f{{ i }}">
+<b>F-{{ i }}</b> <span class="b {{ f.severity }}">{{ f.severity }}</span> <b>{{ f.title }}</b> <span class="meta">· {{ f.rule_id }} · risk {{ f.risk_score }} · confidence {{ f.confidence }} · evidence: {{ f.evidence_type }} · triage: {{ f.triage_status }}</span>
+<p>{{ f.message }}</p>
+<div class="meta">Location: <code>{{ f.file_path }}{% if f.line %}:{{ f.line }}{% endif %}</code>{% if f.job %} · job <code>{{ f.job }}</code>{% endif %}</div>
+{% if f.snippet %}<pre>{{ f.snippet }}</pre>{% endif %}
+{% if f.extra.corroborated_by %}<div class="meta">Corroborated by: {{ f.extra.corroborated_by|join("; ") }}</div>{% endif %}
+{% set r = d.rules.get(f.rule_id, {}) %}
+{% if r.remediation %}<p><b>Remediation:</b> {{ r.remediation }}</p>{% endif %}
+{% if f.extra.suggested_pin %}<p><b>Suggested pin:</b> <code>{{ f.extra.suggested_pin }}</code></p>{% endif %}
+{% if f.ai_notes and f.ai_notes.fix and f.ai_notes.fix.patch %}<div class="meta">Suggested change ({{ f.ai_notes.fix.source }}):</div><pre>{{ f.ai_notes.fix.patch }}</pre>{% endif %}
+{% if f.ai_notes and f.ai_notes.triage %}<div class="ai meta">AI triage ({{ f.ai_notes.triage.source }}): exploitability <b>{{ f.ai_notes.triage.exploitability }}</b>, priority <b>{{ f.ai_notes.triage.priority }}</b> - {{ f.ai_notes.triage.rationale }}</div>{% endif %}
+{% if f.triage_note %}<p class="meta">Analyst note: {{ f.triage_note }}</p>{% endif %}
+{% if r.cwe %}<div class="meta">References: {{ r.cwe|join(", ") }}{% for ref in r.references[:3] %} · <a href="{{ ref }}">{{ ref }}</a>{% endfor %}</div>{% endif %}
+</div>
+{% endfor %}
+{% endfor %}
+
+<h2>5. Pipeline inventory</h2>
+{% set inv = scan.inventory or {} %}
+<table><thead><tr><th>Workflow</th><th>Triggers</th><th>Jobs</th></tr></thead><tbody>
+{% for w in inv.workflows or [] %}<tr><td><code>{{ w.path }}</code>{% if w.error %}<br><span class="b FAIL">parse error</span>{% endif %}</td><td>{{ w.triggers|join(", ") }}</td>
+<td class="meta">{% for j in w.jobs %}{{ j.id }} [{{ j.runs_on|join(", ") }}]{% if j.environment %} env={{ j.environment }}{% endif %}{% if j.secrets %} secrets={{ j.secrets|join(",") }}{% endif %}<br>{% endfor %}</td></tr>{% endfor %}
+</tbody></table>
+<h3>Third-party and external actions</h3>
+<table><thead><tr><th>Reference</th><th>Pinned</th><th>Publisher</th><th>Used in</th></tr></thead><tbody>
+{% for a in inv.actions or [] %}<tr><td><code>{{ a.uses }}</code></td><td>{{ "SHA" if a.sha_pinned else "no" }}</td><td>{{ "GitHub" if a.first_party else a.owner }}</td><td class="meta">{{ a.workflows|join(", ") }}</td></tr>{% endfor %}
+</tbody></table>
+
+<h2>6. Methodology</h2>
+<div class="card">
+<p>Findings are produced by deterministic detection rules ({{ (scan.controls or [])|length }} controls mapped to the OWASP Top 10 CI/CD Security Risks) over safely-parsed workflow YAML, repository files and, where connected, read-only GitHub API settings, complemented by external scanners. Repository code is never executed. Evidence types: <b>configuration</b> (directly observed), <b>inferred</b> (indicator-based, needs confirmation), <b>tool</b> (external scanner output). Statuses: PASS, FAIL, NOT ASSESSED (data unavailable), NOT APPLICABLE, NEEDS MANUAL VALIDATION. AI agents annotate and prioritise but cannot create findings or change statuses.</p>
+<table><thead><tr><th>Tool</th><th>Status</th><th>Results</th><th>Seconds</th><th>Detail</th></tr></thead><tbody>
+{% for t in scan.tool_runs or [] %}<tr><td>{{ t.tool }}</td><td>{{ t.status }}</td><td>{{ t.count }}</td><td>{{ t.seconds }}</td><td class="meta">{{ t.detail[:160] }}</td></tr>{% endfor %}
+</tbody></table>
+<p class="meta">Risk score = severity base × confidence × exposure (public repository, attacker-reachable code execution). Category score = 100 − penalties of failing rules. Posture = mean of assessed category scores. PipelineTrust {{ version }}.</p>
+</div>
+</div></body></html>

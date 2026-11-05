@@ -1,0 +1,31 @@
+# Example: run PipelineTrust as a CI gate on pull requests that change workflows,
+# and upload results to GitHub code scanning (SARIF).
+name: PipelineTrust CI/CD security
+on:
+  pull_request:
+    paths: [".github/**"]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  assess:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload only
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run PipelineTrust (container image built from this repository's Dockerfile)
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -v "$RUNNER_TEMP:/out" -e PT_ENV=development \
+            pipelinetrust:1.0.0 python -m app.cli scan /repo --tools actionlint,zizmor,gitleaks \
+            --format sarif --out /out/pipelinetrust.sarif --fail-on critical
+      - uses: github/codeql-action/upload-sarif@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        if: always()
+        with:
+          sarif_file: ${{ runner.temp }}/pipelinetrust.sarif

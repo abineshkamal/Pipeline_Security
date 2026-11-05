@@ -1,0 +1,18 @@
+name: Publish test report
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          name: coverage
+      - name: Render report
+        run: bash ./coverage/render.sh
+        env:
+          GH_TOKEN: ${{ secrets.REPORT_PAT }}

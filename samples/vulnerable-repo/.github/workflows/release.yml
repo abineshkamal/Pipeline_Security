@@ -1,0 +1,58 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  DEPLOY_KEY_ID: AKIAIOSFODNN7EXAMPLE
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: node:latest
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tj-actions/changed-files@v35
+      - name: Install tooling
+        run: |
+          curl -sSL https://get.example-tool.io/install.sh | bash
+          pip install --extra-index-url https://pypi.internal.example.com/simple internal-lib
+          pip install requests
+      - name: Security scan
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: .
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Push image
+        run: |
+          docker build -t ghcr.io/acme/app:${{ github.ref_name }} .
+          docker push ghcr.io/acme/app:${{ github.ref_name }}
+      - name: Publish package
+        run: npm publish
+      - name: Debug
+        run: echo '${{ toJSON(secrets) }}' > /tmp/s.json && echo "${{ secrets.NPM_TOKEN }}"
+      - name: Deploy
+        run: kubectl apply -f k8s/

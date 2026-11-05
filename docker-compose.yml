@@ -1,0 +1,86 @@
+# PipelineTrust production-oriented stack.
+#   cp .env.example .env   # set secrets
+#   docker compose up -d --build
+name: pipelinetrust
+
+x-app-env: &app-env
+  PT_ENV: production
+  PT_DATABASE_URL: postgresql+psycopg://pipelinetrust:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/pipelinetrust
+  PT_REDIS_URL: redis://redis:6379/0
+  PT_NEO4J_URI: bolt://neo4j:7687
+  PT_NEO4J_USER: neo4j
+  PT_NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD}
+  PT_JWT_SECRET: ${PT_JWT_SECRET:?set PT_JWT_SECRET}
+  PT_ENCRYPTION_KEY: ${PT_ENCRYPTION_KEY:?set PT_ENCRYPTION_KEY}
+  PT_CORS_ORIGINS: ${PT_CORS_ORIGINS:-["https://pipelinetrust.example.com"]}
+  PT_LLM_PROVIDER: ${PT_LLM_PROVIDER:-none}
+  PT_LLM_MODEL: ${PT_LLM_MODEL:-}
+  PT_ANTHROPIC_API_KEY: ${PT_ANTHROPIC_API_KEY:-}
+  PT_OPENAI_API_KEY: ${PT_OPENAI_API_KEY:-}
+
+services:
+  api:
+    build: .
+    image: pipelinetrust:1.0.0
+    environment: *app-env
+    ports: ["127.0.0.1:8000:8000"]   # put a TLS-terminating reverse proxy in front
+    volumes: [ptdata:/data]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      neo4j: { condition: service_started }
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: unless-stopped
+
+  worker:
+    image: pipelinetrust:1.0.0
+    command: ["python", "-m", "app.worker"]
+    environment: *app-env
+    volumes: [ptdata:/data]
+    depends_on:
+      api: { condition: service_healthy }
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_DB: pipelinetrust
+      POSTGRES_USER: pipelinetrust
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipelinetrust -d pipelinetrust"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD}
+    volumes: [neo4jdata:/data]
+    ports: ["127.0.0.1:7474:7474"]
+    restart: unless-stopped
+
+volumes:
+  ptdata: {}
+  pgdata: {}
+  redisdata: {}
+  neo4jdata: {}

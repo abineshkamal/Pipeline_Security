@@ -1,0 +1,3 @@
+# Pipeline definitions require security team review
+*               @acme/maintainers
+/.github/       @acme/security-team
