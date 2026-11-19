@@ -38,7 +38,7 @@ class GitHubClient:
         try:
             r = self.get(path, **params)
         except httpx.HTTPError as exc:
-            return ApiResult("error", detail=f"{type(exc).__name__}")
+            return ApiResult("error", detail=f"{type(exc).__name__}: {exc} ({self.client.base_url})"[:300])
         if r.status_code == 200:
             return ApiResult("ok", r.json())
         if r.status_code == 404 and none_on_404:
@@ -174,7 +174,7 @@ class GitHubConnector(Connector):
             raise
         except httpx.HTTPError as exc:
             gh.close()
-            raise ConnectorError(f"GitHub API error: {type(exc).__name__}") from exc
+            raise ConnectorError(f"GitHub API error: {type(exc).__name__}: {exc}"[:300]) from exc
 
         def resolver(owner: str, repo: str, r: str) -> str | None:
             return gh.resolve_sha(owner, repo, r)
