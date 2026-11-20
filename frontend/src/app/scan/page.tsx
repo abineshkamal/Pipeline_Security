@@ -1,15 +1,18 @@
 "use client";
+import { PathStoryPanel, RuntimePanel } from "@/components/analysis";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart, ResponsiveContainer, Tooltip } from "recharts";
 import Shell, { canEdit, useMe } from "@/components/Shell";
+import FindingDetail from "@/components/FindingDetail";
+import { AskPanel, CompliancePanel, RemediationPanel, SecretsPanel } from "@/components/insights";
 import { ErrorBox, Loading, ScoreRing, SevBadge, StatusBadge } from "@/components/ui";
-import { api, CATEGORIES, fmtDate, type AttackPath, type Finding, type Scan } from "@/lib/api";
+import { api, CATEGORIES, fmtDate, pipelineHref, type AttackPath, type Finding, type Scan } from "@/lib/api";
 
 const AttackGraph = dynamic(() => import("@/components/AttackGraph"), { ssr: false, loading: () => <Loading label="Loading graph…" /> });
-const TABS = ["Overview", "Controls", "Findings", "Attack paths", "AI analysis", "Inventory", "Tools"] as const;
+const TABS = ["Overview", "Controls", "Findings", "Attack paths", "Secrets", "Runtime", "Fix & simulate", "Compliance", "Ask", "AI analysis", "Inventory", "Tools"] as const;
 type Tab = (typeof TABS)[number];
 
 function Overview({ scan }: { scan: Scan }) {
@@ -64,49 +67,6 @@ function Controls({ scan }: { scan: Scan }) {
             <td className="small text-secondary">{c.note}{c.evidence.slice(0, 3).map((e, i) => <div key={i}>{e}</div>)}</td></tr>
         ))}</tbody>
       </table></div>
-    </div></div>
-  );
-}
-
-function FindingDetail({ f, onSaved }: { f: Finding; onSaved: (f: Finding) => void }) {
-  const { role } = useMe();
-  const [triage, setTriage] = useState(f.triage_status);
-  const [val, setVal] = useState(f.validation_status);
-  const [note, setNote] = useState(f.triage_note);
-  const [msg, setMsg] = useState<string | null>(null);
-  // reset the form only when a different finding is selected (not when the saved copy comes back)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setTriage(f.triage_status); setVal(f.validation_status); setNote(f.triage_note); setMsg(null); }, [f.id]);
-  const save = async () => {
-    try { onSaved(await api.patch<Finding>(`/api/findings/${f.id}`, { triage_status: triage, validation_status: val, triage_note: note })); setMsg("Saved"); }
-    catch (x) { setMsg((x as Error).message); }
-  };
-  const t = f.ai_notes?.triage, fix = f.ai_notes?.fix;
-  return (
-    <div className={`card border-sev-${f.severity}`}><div className="card-body">
-      <div className="d-flex gap-2 align-items-center flex-wrap mb-1"><SevBadge s={f.severity} /><span className="fw-semibold">{f.title}</span></div>
-      <div className="small text-secondary mb-2">{f.rule_id} · {f.category} · risk {f.risk_score} · confidence {f.confidence} · evidence: {f.evidence_type}</div>
-      <p className="mb-2">{f.message}</p>
-      <div className="small mb-1">Location: <code className="text-break-all">{f.file_path}{f.line ? `:${f.line}` : ""}</code>{f.job && <> · job <code>{f.job}</code></>}</div>
-      {f.snippet && <pre className="snippet mb-2">{f.snippet}</pre>}
-      {f.extra?.corroborated_by && <div className="small text-success mb-2">✔ Corroborated by: {f.extra.corroborated_by.join("; ")}</div>}
-      {f.extra?.suggested_pin && <div className="small mb-2">Suggested pin: <code className="text-break-all">{f.extra.suggested_pin}</code></div>}
-      {fix?.patch && <><div className="small text-secondary">Suggested change ({fix.source}):</div><pre className="snippet mb-2">{fix.patch}</pre></>}
-      {fix?.explanation && <p className="small">{fix.explanation}</p>}
-      {t && <div className="alert alert-secondary small py-2">AI triage ({t.source}): exploitability <b>{t.exploitability}</b>, priority <b>{t.priority}</b>, false-positive likelihood {t.false_positive_likelihood}. {t.rationale}</div>}
-      <hr />
-      <div className="row g-2">
-        <div className="col-6"><label className="form-label small" htmlFor="tri">Triage</label>
-          <select id="tri" className="form-select form-select-sm" value={triage} disabled={!canEdit(role)} onChange={(e) => setTriage(e.target.value)}>
-            {["open", "confirmed", "false_positive", "accepted_risk", "fixed"].map((x) => <option key={x}>{x}</option>)}</select></div>
-        <div className="col-6"><label className="form-label small" htmlFor="val">Validation</label>
-          <select id="val" className="form-select form-select-sm" value={val} disabled={!canEdit(role)} onChange={(e) => setVal(e.target.value)}>
-            {["unvalidated", "config_evidence", "needs_validation", "validated", "not_reproducible"].map((x) => <option key={x}>{x}</option>)}</select></div>
-        <div className="col-12"><label className="form-label small" htmlFor="note">Analyst note</label>
-          <textarea id="note" className="form-control form-control-sm" rows={2} value={note} disabled={!canEdit(role)} onChange={(e) => setNote(e.target.value)} /></div>
-      </div>
-      {canEdit(role) && <button className="btn btn-sm btn-primary mt-2" onClick={save}>Save triage</button>}
-      {msg && <span className="small ms-2">{msg}</span>}
     </div></div>
   );
 }
@@ -188,6 +148,7 @@ function AttackPaths({ scan, goFinding }: { scan: Scan; goFinding: (id: string) 
           {narratives[hl.id] && <div className="alert alert-secondary small py-2 mt-2">{narratives[hl.id].narrative}{narratives[hl.id].break_point && <><br /><b>Break the chain:</b> {narratives[hl.id].break_point}</>}</div>}
           <div className="small">Evidence: {hl.finding_ids.map((id) => <button key={id} className="btn btn-link btn-sm p-0 me-2" onClick={() => goFinding(id)}>{id.slice(0, 8)}</button>)}</div>
         </div></div>}
+        {hl && <PathStoryPanel scanId={scan.id} pathId={hl.id} goFinding={goFinding} />}
       </div>
     </div>
   );
@@ -227,7 +188,8 @@ function InventoryPanel({ scan }: { scan: Scan }) {
       <div className="col-12"><div className="card"><div className="card-body">
         <h2 className="h6">Workflows ({inv.workflows.length})</h2>
         <div className="table-responsive"><table className="table table-sm small mb-0"><thead><tr><th>Workflow</th><th>Triggers</th><th>Jobs</th></tr></thead><tbody>
-          {inv.workflows.map((w) => <tr key={w.path}><td><code>{w.path}</code>{w.error && <div className="text-danger">{w.error}</div>}</td>
+          {inv.workflows.map((w) => <tr key={w.path}><td><Link href={pipelineHref(scan.id, w.path)} className="fw-semibold">{w.name || w.path}</Link>
+            <div><code>{w.path}</code></div>{w.error && <div className="text-danger">{w.error}</div>}</td>
             <td>{w.triggers.map((t) => <span key={t} className={`badge me-1 ${w.privileged_triggers.includes(t) ? "bg-danger" : w.external_triggers.includes(t) ? "bg-warning text-dark" : "bg-secondary"}`}>{t}</span>)}</td>
             <td>{w.jobs.map((j) => <div key={j.id}><b>{j.id}</b> [{j.runs_on.join(", ")}]{j.self_hosted && <span className="badge bg-danger ms-1">self-hosted</span>}
               {j.environment && <span className="badge bg-info text-dark ms-1">env {j.environment}</span>}
@@ -262,11 +224,13 @@ function Tools({ scan }: { scan: Scan }) {
 }
 
 function Body() {
-  const id = useSearchParams().get("id") || "";
+  const sp = useSearchParams();
+  const id = sp.get("id") || "";
+  const linked = sp.get("finding");
   const [scan, setScan] = useState<Scan | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("Overview");
-  const [focus, setFocus] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>(linked ? "Findings" : "Overview");
+  const [focus, setFocus] = useState<string | null>(linked);
   const load = useCallback(() => { api.get<Scan>(`/api/scans/${id}`).then(setScan).catch((e) => setErr(e.message)); }, [id]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -306,6 +270,12 @@ function Body() {
           {tab === "AI analysis" && <AIPanel scan={scan} reload={load} />}
           {tab === "Inventory" && <InventoryPanel scan={scan} />}
           {tab === "Tools" && <Tools scan={scan} />}
+          {tab === "Secrets" && <SecretsPanel scanId={id} />}
+          {tab === "Runtime" && (scan.project?.source_type === "github" ? <RuntimePanel scanId={id} /> :
+            <div className="text-secondary p-4 border rounded">Run history and runner inventory come from GitHub; ZIP assessments have none.</div>)}
+          {tab === "Fix & simulate" && <RemediationPanel scanId={id} isGithub={scan.project?.source_type === "github"} />}
+          {tab === "Compliance" && <CompliancePanel scanId={id} />}
+          {tab === "Ask" && <AskPanel scanId={id} />}
         </>
       )}
     </>

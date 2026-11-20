@@ -1,9 +1,11 @@
 """Executes one scan end-to-end and persists results. Runs in a worker thread or the Redis worker process."""
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import traceback
+from types import SimpleNamespace
 from pathlib import Path
 
 from sqlalchemy import select
@@ -13,11 +15,14 @@ from ..config import get_settings
 from ..connectors.base import ConnectorError, registry
 from ..db import SessionLocal
 from ..graph.attack_paths import sync_to_neo4j
-from ..models import Credential, Finding, Project, Scan, utcnow
+from ..models import ActionAdvisory, Credential, Finding, OrgPolicy, Project, Scan, utcnow
 from ..scanner.engine import run_assessment
 from ..scanner.rules import load_rules
 from ..security import decrypt_secret
 from .audit import record
+from .exceptions import apply_to_findings as apply_exceptions
+from .monitoring import after_scan
+from .tickets import sync_after_scan as sync_tickets
 
 log = logging.getLogger("pipelinetrust.runner")
 
@@ -38,6 +43,29 @@ def workspace_dir(scan_id: str) -> Path:
 
 def artifacts_dir(scan_id: str) -> Path:
     return get_settings().data_dir / "artifacts" / scan_id
+
+
+def org_scan_extensions(db, org_id: str) -> dict:
+    """Organization policies and advisories that every scan of this organization evaluates."""
+    pols = db.execute(select(OrgPolicy).where(OrgPolicy.organization_id == org_id, OrgPolicy.enabled.is_(True))
+                      .order_by(OrgPolicy.policy_id)).scalars().all()
+    advs = db.execute(select(ActionAdvisory).where(ActionAdvisory.organization_id == org_id)).scalars().all()
+    return {"custom_policies": [p.definition for p in pols], "custom_advisories": [a.as_advisory() for a in advs]}
+
+
+def save_workflow_sources(scan_id: str, sources: dict[str, str]) -> None:
+    """Keep the workflow files (only `.github/workflows/*`, small text) so fixes can be generated after the workspace is deleted."""
+    d = artifacts_dir(scan_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "workflows.json").write_text(json.dumps(sources), "utf-8")
+
+
+def load_workflow_sources(scan_id: str) -> dict[str, str] | None:
+    p = artifacts_dir(scan_id) / "workflows.json"
+    try:
+        return json.loads(p.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _set(db, scan: Scan, **kw):
@@ -70,10 +98,16 @@ def execute_scan(scan_id: str) -> None:
             cred = db.get(Credential, project.credential_id)
             if cred and cred.organization_id == project.organization_id:
                 secret = decrypt_secret(cred.secret_encrypted)
-        ws = connector.acquire(project=project, secret=secret, workdir=work,
+        target = project
+        if (scan.options or {}).get("ref"):  # scan a specific branch / tag / commit without changing the project
+            target = SimpleNamespace(**{c: getattr(project, c) for c in ("id", "name", "repo_full_name", "source_type", "organization_id")},
+                                     ref=scan.options["ref"])
+        ws = connector.acquire(project=target, secret=secret, workdir=work,
                                upload_path=Path(scan.upload_path) if scan.upload_path else None, progress=progress)
         client = getattr(ws, "_client", None)
-        result = run_assessment(ws.root, ws.metadata, scan.options or {}, artifacts_dir(scan_id), progress, ws.sha_resolver)
+        opts = {**(scan.options or {}), **org_scan_extensions(db, scan.organization_id)}
+        result = run_assessment(ws.root, ws.metadata, opts, artifacts_dir(scan_id), progress, ws.sha_resolver)
+        save_workflow_sources(scan_id, result.workflow_sources)
 
         progress("Saving findings")
         db.query(Finding).filter(Finding.scan_id == scan_id).delete()
@@ -114,9 +148,26 @@ def execute_scan(scan_id: str) -> None:
             progress("Running AI analysis agents")
             run_ai_for_scan(db, scan)
 
+        apply_exceptions(db, scan.project_id, rows)  # approved, unexpired risk exceptions
         _set(db, scan, status="completed", progress="Completed", finished_at=utcnow())
         record(db, scan.organization_id, None, "scan.completed", f"scan:{scan_id}",
-               {"posture_score": scan.posture_score, "findings": len(rows)})
+               {"posture_score": scan.posture_score, "findings": len(rows), "trigger": (scan.options or {}).get("trigger", "manual")})
+        try:
+            alert = after_scan(db, scan)
+            if alert:
+                record(db, scan.organization_id, None, "alert.drift", f"scan:{scan_id}",
+                       {"alert": alert.id, "severity": alert.severity, "items": len(alert.items),
+                        "delivered": sum(1 for d in alert.deliveries if d["ok"])})
+        except Exception as exc:  # noqa: BLE001 - monitoring must never fail a completed scan
+            log.error("drift check for scan %s failed: %s", scan_id, exc)
+            db.rollback()
+        try:
+            t = sync_tickets(db, scan)
+            if t["resolved"]:
+                record(db, scan.organization_id, None, "tickets.resolved", f"scan:{scan_id}", t)
+        except Exception as exc:  # noqa: BLE001
+            log.error("ticket sync for scan %s failed: %s", scan_id, exc)
+            db.rollback()
     except Exception as exc:  # noqa: BLE001 - surface any failure on the scan record
         log.error("scan %s failed: %s", scan_id, exc)
         traceback.print_exc()
@@ -135,13 +186,14 @@ def execute_scan(scan_id: str) -> None:
 
 
 def _previous_triage(db, scan: Scan) -> dict[str, tuple[str, str]]:
-    prev = db.execute(select(Scan).where(Scan.project_id == scan.project_id, Scan.id != scan.id, Scan.status == "completed")
+    prev = db.execute(select(Scan).where(Scan.project_id == scan.project_id, Scan.id != scan.id, Scan.status == "completed", Scan.ref_override == "")
                       .order_by(Scan.created_at.desc()).limit(1)).scalar_one_or_none()
     if not prev:
         return {}
-    rows = db.execute(select(Finding.fingerprint, Finding.triage_status, Finding.triage_note)
+    rows = db.execute(select(Finding.fingerprint, Finding.triage_status, Finding.triage_note, Finding.extra)
                       .where(Finding.scan_id == prev.id, Finding.triage_status.in_(["false_positive", "accepted_risk", "confirmed"]))).all()
-    return {r[0]: (r[1], r[2]) for r in rows}
+    # accepted_risk that came from a risk exception is re-derived from the exception, never carried over
+    return {r[0]: (r[1], r[2]) for r in rows if not (r[1] == "accepted_risk" and (r[3] or {}).get("exception"))}
 
 
 def run_ai_for_scan(db, scan: Scan, provider=None) -> dict:

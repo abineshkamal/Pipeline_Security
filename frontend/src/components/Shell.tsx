@@ -11,7 +11,12 @@ export const canEdit = (role: string) => role === "admin" || role === "analyst";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
+  { href: "/portfolio", label: "Portfolio" },
   { href: "/projects", label: "Projects" },
+  { href: "/alerts", label: "Alerts" },
+  { href: "/exceptions", label: "Exceptions" },
+  { href: "/watch", label: "Supply chain" },
+  { href: "/policies", label: "Policies" },
   { href: "/rules", label: "Rule catalog" },
   { href: "/settings", label: "Settings" },
 ];
@@ -41,7 +46,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <MeCtx.Provider value={{ me, role: org?.role || "viewer" }}>
-      <nav className="navbar navbar-expand-md pt-nav sticky-top">
+      <nav className="navbar navbar-expand-xl pt-nav sticky-top">
         <div className="container-xl">
           <Link className="navbar-brand fw-bold d-flex align-items-center gap-2" href="/dashboard">
             <span className="pt-logo" aria-hidden>◆</span> PipelineTrust
@@ -54,15 +59,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             <ul className="navbar-nav me-auto">
               {NAV.map((n) => (
                 <li className="nav-item" key={n.href}>
-                  <Link className={`nav-link ${path?.startsWith(n.href) ? "active" : ""}`} href={n.href}>{n.label}</Link>
+                  <Link className={`nav-link text-nowrap px-xl-2 ${path?.startsWith(n.href) ? "active" : ""}`} href={n.href}>{n.label}</Link>
                 </li>
               ))}
             </ul>
             <div className="d-flex align-items-center gap-2 small">
               <button className="btn btn-sm btn-outline-light" onClick={() => setDark(!dark)} aria-label="Toggle dark mode">{dark ? "☀" : "☾"}</button>
-              {org && <span className="text-white-50">{org.name} · <span className="text-white">{org.role}</span></span>}
-              <span className="text-white-50 d-none d-lg-inline">{me?.email}</span>
-              <button className="btn btn-sm btn-light" onClick={logout}>Sign out</button>
+              {org && <span className="text-white-50 text-nowrap" title={me?.email}>{org.name} · <span className="text-white">{org.role}</span></span>}
+              <button className="btn btn-sm btn-light text-nowrap" onClick={logout} title={me?.email ? `Signed in as ${me.email}` : undefined}>Sign out</button>
             </div>
           </div>
         </div>

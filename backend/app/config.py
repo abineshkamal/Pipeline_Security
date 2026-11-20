@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 120
 
     github_api_url: str = "https://api.github.com"
+
+    # Continuous monitoring
+    scheduler_enabled: bool = True  # scheduled scans + exception expiry; run it on one instance only
+    scheduler_interval_seconds: int = 60
+    public_url: str = ""  # e.g. https://pipelinetrust.example.com - used for links in alerts
+    allow_private_webhooks: bool = False  # allow alert webhooks to private/loopback addresses (lab use only)
     auto_migrate: bool = True  # run Alembic on startup (disable when the container entrypoint migrates)
 
     @property

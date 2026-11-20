@@ -97,6 +97,7 @@ def project_out(p: Project, db: Session) -> dict:
     count = db.execute(select(func.count()).select_from(Scan).where(Scan.project_id == p.id)).scalar()
     return {"id": p.id, "name": p.name, "description": p.description, "source_type": p.source_type, "repo_full_name": p.repo_full_name,
             "ref": p.ref, "credential_id": p.credential_id, "created_at": p.created_at.isoformat(), "scan_count": count,
+            "schedule": p.schedule, "next_scan_at": p.next_scan_at.isoformat() if p.next_scan_at else None,
             "last_scan": {"id": last.id, "status": last.status, "posture_score": last.posture_score,
                           "created_at": last.created_at.isoformat(), "severity_counts": (last.summary or {}).get("severity_counts")} if last else None}
 
@@ -139,7 +140,7 @@ def delete_project(project_id: str, ctx: OrgContext = Depends(require("admin")),
 @router.get("/projects/{project_id}/trend")
 def project_trend(project_id: str, ctx: OrgContext = Depends(org_context), db: Session = Depends(get_db)):
     get_owned(db, Project, project_id, ctx)
-    scans = db.execute(select(Scan).where(Scan.project_id == project_id, Scan.status == "completed").order_by(Scan.created_at)).scalars()
+    scans = db.execute(select(Scan).where(Scan.project_id == project_id, Scan.status == "completed", Scan.ref_override == "").order_by(Scan.created_at)).scalars()
     out = []
     for s in scans:
         sm = s.summary or {}
@@ -156,7 +157,7 @@ def dashboard(ctx: OrgContext = Depends(org_context), db: Session = Depends(get_
     projects = db.execute(select(Project).where(Project.organization_id == ctx.org_id)).scalars().all()
     latest = []
     for p in projects:
-        s = db.execute(select(Scan).where(Scan.project_id == p.id, Scan.status == "completed").order_by(Scan.created_at.desc()).limit(1)).scalar_one_or_none()
+        s = db.execute(select(Scan).where(Scan.project_id == p.id, Scan.status == "completed", Scan.ref_override == "").order_by(Scan.created_at.desc()).limit(1)).scalar_one_or_none()
         if s:
             latest.append((p, s))
     sev = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}

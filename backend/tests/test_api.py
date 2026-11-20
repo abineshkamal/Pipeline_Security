@@ -74,6 +74,36 @@ def test_findings_filter_and_triage(client, ctx):
     assert client.patch(f"/api/findings/{fid}", headers=ctx["admin"], json={"triage_status": "bogus"}).status_code == 422
 
 
+def test_pipelines_list_and_detail(client, ctx):
+    a = ctx["admin"]
+    r = client.get(f"/api/projects/{ctx['pid']}/pipelines", headers=a)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scan"]["id"] == ctx["sid"]
+    pipes = body["pipelines"]
+    scan = client.get(f"/api/scans/{ctx['sid']}", headers=a).json()
+    assert {p["path"] for p in pipes} == {w["path"] for w in scan["inventory"]["workflows"]}
+    assert [p["max_risk"] for p in pipes] == sorted((p["max_risk"] for p in pipes), reverse=True)
+    # every workflow finding is counted against exactly one pipeline
+    all_fs = client.get(f"/api/scans/{ctx['sid']}/findings", headers=a).json()
+    wf_paths = {p["path"] for p in pipes}
+    assert sum(p["findings"] for p in pipes) == sum(1 for f in all_fs if f["file_path"] in wf_paths)
+
+    top = pipes[0]
+    d = client.get(f"/api/scans/{ctx['sid']}/pipeline", params={"path": top["path"]}, headers=a).json()
+    assert d["workflow"]["path"] == top["path"] and d["summary"]["findings"] == top["findings"]
+    assert d["findings"] and all(f["file_path"] == top["path"] for f in d["findings"])
+    assert all(not f["file_path"] or f["file_path"].startswith("(") for f in d["repo_setting_findings"])
+    assert len(d["attack_paths"]) == top["attack_paths"]
+    node_ids = {n["id"] for n in d["graph"]["nodes"]}
+    assert all(set(p["nodes"]) <= node_ids for p in d["attack_paths"])
+    assert {p["path"] for p in d["pipelines"]} == wf_paths
+
+    assert client.get(f"/api/scans/{ctx['sid']}/pipeline", params={"path": "nope.yml"}, headers=a).status_code == 404
+    assert client.get(f"/api/scans/{ctx['sid']}/pipeline", params={"path": top["path"]}, headers=ctx["other"]).status_code == 404
+    assert client.get(f"/api/projects/{ctx['pid']}/pipelines", headers=ctx["other"]).status_code == 404
+
+
 def test_tenant_isolation(client, ctx):
     o = ctx["other"]
     assert client.get(f"/api/scans/{ctx['sid']}", headers=o).status_code == 404

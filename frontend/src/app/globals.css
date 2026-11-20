@@ -21,7 +21,16 @@ body { background: var(--pt-bg); color: var(--pt-ink); }
 .badge.st-PASS, .badge.st-completed { background: var(--pt-pass); } .badge.st-FAIL, .badge.st-failed { background: var(--pt-fail); }
 .badge.st-NOT_ASSESSED, .badge.st-NOT_APPLICABLE, .badge.st-queued { background: var(--pt-na); }
 .badge.st-NEEDS_MANUAL_VALIDATION { background: var(--pt-manual); } .badge.st-running { background: var(--pt-low); }
+.badge.st-PARTIAL { background: var(--pt-medium); }
+.badge.lvl-critical { background: var(--pt-critical); } .badge.lvl-high { background: var(--pt-high); }
+.badge.lvl-medium { background: var(--pt-medium); } .badge.lvl-low { background: var(--pt-low); }
 .badge { font-weight: 600; text-transform: none; }
+pre.diff { background: #0f172a; color: #e2e8f0; padding: .5rem 0; border-radius: .4rem; font-size: .76rem; margin: 0; max-height: 520px; overflow: auto; }
+pre.diff span { display: block; padding: 0 .75rem; white-space: pre; }
+pre.diff .add { background: rgba(47,133,90,.35); } pre.diff .del { background: rgba(197,48,48,.35); } pre.diff .hunk { color: #93c5fd; }
+.delta-up { color: var(--pt-pass); font-weight: 600; } .delta-down { color: var(--pt-fail); font-weight: 600; }
+.answer { white-space: pre-wrap; }
+textarea.code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .82rem; }
 pre.snippet { background: #0f172a; color: #e2e8f0; padding: .6rem .75rem; border-radius: .4rem; font-size: .78rem; white-space: pre-wrap; word-break: break-word; margin: 0; }
 .finding-row { cursor: pointer; }
 .finding-row:hover td { background: rgba(45,58,140,.06); }
@@ -33,3 +42,6 @@ pre.snippet { background: #0f172a; color: #e2e8f0; padding: .6rem .75rem; border
 .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .auth-card { width: 100%; max-width: 420px; }
 @media (max-width: 576px) { .graph-wrap { height: 420px; } .kpi .v { font-size: 1.4rem; } }
+
+.story-step { width: 28px; height: 28px; flex: 0 0 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--pt-line); font-size: 14px; }
+.risk-increase { border-left: 3px solid var(--pt-critical); } .risk-decrease { border-left: 3px solid var(--pt-pass); } .risk-neutral { border-left: 3px solid var(--pt-line); }

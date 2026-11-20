@@ -15,7 +15,38 @@ prioritise and explain them, and a guardrail discards any AI reference to a find
 | AI agents (LangGraph) | context analyst → triage analyst → attack-path analyst → remediation engineer → report writer → guardrail. Providers: Anthropic Claude (default `claude-opus-5-5`), OpenAI, or none (deterministic fallback). |
 | Platform | JWT auth, organizations, Admin / Analyst / Viewer RBAC, tenant isolation (cross-org lookups return 404), Fernet-encrypted credentials, audit log, login throttling, security headers/CSP. |
 | Reporting | HTML (self-contained, printable), JSON, SARIF 2.1.0 (GitHub code scanning), CycloneDX SBOM; posture trend, scan comparison (new / fixed / persisting), triage carried across re-scans. |
-| CLI / CI gate | `python -m app.cli scan PATH --format sarif --fail-on high` (see `examples/pipelinetrust-ci.yml`). |
+| CLI / CI gate | `python -m app.cli scan PATH --format sarif --fail-on high [--policies DIR --fail-on-policy] [--max-attack-paths 0] [--summary FILE]`, or the bundled GitHub Action (see `examples/pipelinetrust-gate.yml`). |
+
+## Remediation, insight and governance features
+
+| Feature | Where | What it does |
+|---|---|---|
+| Pipeline view | Project page → Pipelines | One row per workflow file (riskiest first); each opens a per-pipeline analysis with its findings, jobs, actions, secrets, attack paths and fixes. |
+| One-click fixes | Scan / pipeline → Fix & simulate | Rule-based patches for PT-3P-001 (pin to commit SHA), PT-PBAC-001 (read-only `permissions:`), PT-CRED-005 (`persist-credentials: false`) and PT-PPE-003 (untrusted `${{ }}` moved to `env:`). Each patched file is re-parsed and every workflow rule re-run; only verified fixes are offered. Download a `.patch` or open a pull request (needs a separate token with Contents + Pull requests write). Actions with an advisory are never auto-pinned. |
+| What-if simulator | Scan / pipeline → Fix & simulate | Mark findings as fixed and see the recomputed posture score, controls and attack paths (same scoring code as a scan); ranks whole-rule and single fixes by paths removed and score gained. |
+| Secret blast radius | Scan / pipeline → Secrets | Per secret: pipelines and jobs that read it, who can trigger them (outsiders via privileged triggers, contributors, maintainers), environment gates and attacker-influenced code in the same job. |
+| Compromised-action watch | Threat watch | Built-in advisories (CVE-2025-30066, CVE-2025-30154) plus organization advisories, matched against every project's latest inventory without re-scanning; lists GitHub Actions runs inside the incident window. |
+| Compliance evidence packs | Scan → Compliance | Indicative mapping of controls to NIST SSDF, SLSA Build track, CIS Software Supply Chain areas, SOC 2 and ISO/IEC 27001:2022, with evidence; export HTML, CSV or JSON. |
+| Ask your pipelines | Scan → Ask | Questions answered from scan data: deterministic intents always; with an LLM configured, answers must cite ids and a guardrail removes any reference that does not exist. |
+| Organization portfolio | Portfolio | Import every repository of a GitHub organization or user (skips archived / forks unless asked, never duplicates), then a risk leaderboard (riskiest first) with score trend, attack paths, outsider-reachable and stale secrets, exceptions and alerts, a per-owner roll-up, and bulk scan / schedule. |
+| Scheduled scans + drift alerts | Project page, Portfolio, Alerts | Daily or weekly re-scans. Every completed scan is compared with the previous one; only regressions alert (new attack path, new critical/high finding, secret newly reachable by outsiders, score drop). Delivered to Slack, Microsoft Teams (workflow webhook, Adaptive Card) or a generic JSON webhook, filtered by minimum severity. Webhook URLs are encrypted; HTTPS only and private / loopback addresses are refused. |
+| Risk exceptions | Finding detail, Exceptions | Accept a finding, a rule in one workflow or a rule in a project with a justification, compensating controls, a risk owner and an expiry (max 365 days). An admin other than the requester must approve. Active exceptions mark findings `accepted risk` on every scan; on expiry or revocation the findings reopen. The posture score is not changed. |
+| Secret rotation | Scan / pipeline → Secrets | With a token that has `Secrets: read` (names and dates only), shows when each secret was last updated (environment > repository > organization, as GitHub injects them), flags aging (90+ days) and stale (180+ days) secrets and lists "rotate first": highly exposed and old. |
+| Release / change diff | Project → Scans → tick two → Compare | Scan any branch, tag or commit (`ref`), then compare two scans: pipelines, triggers, job permissions, secrets, runners, environments and third-party actions added / removed / re-pinned, classified riskier / safer, plus new and removed attack paths and findings. Ref scans never become the project's current posture, raise drift alerts or close tickets. |
+| Attacker walkthrough | Scan → Attack paths | For each attack path, the attacker's steps with the evidence behind each one, the defence at each step, and the fixes that break the chain (single findings or a whole step), verified with the what-if simulator. |
+| Runtime evidence | Scan / pipeline → Runtime | Reads the last 300 GitHub Actions runs: privileged workflows actually started from forks or by non-members ("observed in practice"), dormant pipelines that still hold secrets, run counts, events and failure rates. Self-hosted runner and runner-group inventory (needs Administration read / org admin) cross-referenced with fork-reachable jobs. |
+| Executive report | Portfolio → Executive report | Printable one-page report for 30 to 365 days: posture trend, riskiest projects and teams, most common weaknesses, fixed vs new findings, drift alerts and expiring exceptions. |
+| Jira / ServiceNow tickets | Settings → Ticketing, finding detail | Open a ticket from any finding; tickets follow the finding fingerprint across scans, get a comment and an optional close transition / state when a scan no longer finds it, and reopen in PipelineTrust if it comes back. Credentials encrypted, HTTPS only. |
+| CI gate (GitHub Action) | `action.yml`, `examples/pipelinetrust-gate.yml` | Composite action: installs the CLI (`backend/requirements-cli.txt`), fails on severity, on custom-policy violations (`--policies`, `--fail-on-policy`) or on more attack paths than allowed (`--max-attack-paths`), writes SARIF and a job summary. Inputs are passed as environment variables, never interpolated. |
+| Least-privilege permissions | Pipeline → Jobs & permissions; the PT-PBAC-001 auto-fix | Infers each job's minimum GITHUB_TOKEN scopes from known actions and `gh` / `git` usage, with reasons and a confidence level. The auto-fix adds `contents: read` at workflow level plus exact job-level blocks, and never grants write scopes to workflows that pull requests or comments can trigger (it explains how to split them instead). |
+| Fix campaigns | Portfolio → Fix campaigns | Roll an auto-fixable rule out to many repositories as verified pull requests (dry run first), then follow each PR to merge and confirm with re-scans. Needs a separate token with Contents + Pull requests write. |
+| Action reputation + allowlist | Supply chain → Action reputation / Allowlist | Scores every third-party action in use (publisher verification, maintenance, age, popularity, archived, advisories; GitHub metadata cached 24 h) and generates the GitHub "allowed actions" policy JSON (optionally exact SHAs) with the `gh api` commands to apply it. |
+| Remediation SLAs | Portfolio → Remediation SLAs | Per-severity targets (default 7 / 30 / 90 / 180 days), open and overdue findings, mean time to fix and percentage fixed within target, by severity and team. |
+| API tokens | Settings → API tokens | `pt_…` keys for scripts and CI: role-scoped, capped at the creator's current role, bound to one organization, expiring, revocable, stored as SHA-256; tokens cannot create tokens or open campaign PRs. |
+| SIEM export | Settings → SIEM export | Streams audit events and drift alerts to Splunk HEC, Datadog logs or an HMAC-signed webhook in the background; JSONL audit export for backfill. |
+| Plain-English policies | Policies → Describe a rule | Drafts a policy from a sentence (AI provider if configured, otherwise built-in templates), validates it with the policy parser and dry-runs it on every project before you save it. |
+| Golden templates | Policies → Golden pipeline templates | Mark an approved (reusable) workflow and see which repositories call it, call an unapproved version, copied it, drifted from it (missing / extra steps) or never adopted it. |
+| Policies (policy-as-code) | Policies | Organization rules in YAML over workflows, jobs or actions (`when` / `unless` conditions); dry-run against every project, then evaluated on every scan like a built-in rule. |
 
 ## OWASP CI/CD coverage
 
@@ -45,6 +76,9 @@ PT_TOOLS_DIR=/path/to/scanner/binaries PT_FRONTEND_DIR=../frontend/out .venv/Scr
 Open http://127.0.0.1:8000, register an organization, create a project (GitHub repo or ZIP upload), run a scan.
 Without `PT_DATABASE_URL` / `PT_REDIS_URL` / `PT_NEO4J_URI` it uses SQLite, an in-process job pool and the in-memory graph.
 API docs: `/api/docs`.
+
+Monitoring: the scheduler runs inside the API process (`PT_SCHEDULER_ENABLED=true`, checks every `PT_SCHEDULER_INTERVAL_SECONDS`); run it on one
+instance only. Set `PT_PUBLIC_URL` so alerts link back to the scan.
 
 AI agents: set `PT_LLM_PROVIDER=anthropic` and `PT_ANTHROPIC_API_KEY=…` (or `openai` + `PT_OPENAI_API_KEY`).
 
@@ -82,7 +116,7 @@ Containers run as non-root, read-only, all capabilities dropped. Put a TLS rever
 ## Tests
 
 ```bash
-cd backend && .venv/Scripts/python -m pytest -q          # 41 tests: rules, YAML/ZIP safety, API/RBAC/isolation, reports, agents, Redis worker
+cd backend && .venv/Scripts/python -m pytest -q          # 83 tests: rules, YAML/ZIP safety, API/RBAC/isolation, reports, agents, Redis worker, insights, monitoring, analysis, CLI gate, enterprise features
 .venv/Scripts/python scripts/smoke_scan.py gitleaks,actionlint,zizmor,trivy,syft   # full engine on the sample repos
 .venv/Scripts/python scripts/e2e_browser.py http://127.0.0.1:8000 shots           # browser E2E (installed Microsoft Edge via Playwright)
 ```
@@ -108,7 +142,7 @@ It is registered on import; the engine, API, UI catalog and reports pick it up w
 * Repository code is never executed. Archives are extracted with zip-slip, symlink, size and file-count guards, and deleted after the scan.
 * YAML is parsed with `SafeLoader` and alias-bomb protection; malformed files are reported as a coverage gap.
 * GitHub tokens are encrypted with Fernet (`PT_ENCRYPTION_KEY`), never returned by the API, and only sent to `api.github.com` (not to the archive download host).
-* Recommended token: fine-grained, read-only (Contents, Metadata, Actions, Administration, Environments). `Test` in Settings warns about classic write scopes.
+* Recommended token: fine-grained, read-only (Contents, Metadata, Actions, Administration, Environments; add Secrets for rotation dates). `Test` in Settings warns about classic write scopes.
 * Prompts mark repository content as untrusted; AI output is schema-validated and cannot change control status.
 
 ## Known limitations

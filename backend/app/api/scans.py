@@ -30,13 +30,19 @@ class ScanOptions(BaseModel):
     tools: list[str] = Field(default_factory=lambda: list(DEFAULT_TOOLS))
     run_tools: bool = True
     ai: bool = True
+    ref: str = Field(default="", max_length=200, pattern=r"^[A-Za-z0-9._/\-]*$", description="branch, tag or commit; empty = project ref")
 
 
 def _clean_options(o: ScanOptions) -> dict:
     bad = [t for t in o.tools if t not in ALL_TOOLS]
     if bad:
         raise HTTPException(422, f"unknown tools: {', '.join(bad)}")
-    return o.model_dump()
+    if o.ref.startswith(("-", "/")) or ".." in o.ref:
+        raise HTTPException(422, "invalid ref")
+    d = o.model_dump()
+    if not d["ref"]:
+        d.pop("ref")
+    return d
 
 
 def scan_out(s: Scan, full: bool = False) -> dict:
@@ -44,7 +50,8 @@ def scan_out(s: Scan, full: bool = False) -> dict:
             "posture_score": s.posture_score, "commit_sha": s.commit_sha, "options": s.options,
             "created_at": s.created_at.isoformat(), "started_at": s.started_at.isoformat() if s.started_at else None,
             "finished_at": s.finished_at.isoformat() if s.finished_at else None,
-            "severity_counts": (s.summary or {}).get("severity_counts"), "grade": (s.summary or {}).get("grade")}
+            "severity_counts": (s.summary or {}).get("severity_counts"), "grade": (s.summary or {}).get("grade"),
+            "ref": (s.options or {}).get("ref") or "", "trigger": (s.options or {}).get("trigger") or "manual"}
     if full:
         base.update(summary=s.summary, inventory=s.inventory, controls=s.controls, tool_runs=s.tool_runs,
                     attack_graph=s.attack_graph, ai_analysis=s.ai_analysis)
@@ -66,7 +73,8 @@ def start_scan(project_id: str, opts: ScanOptions | None = None, ctx: OrgContext
     p = get_owned(db, Project, project_id, ctx)
     if p.source_type != "github":
         raise HTTPException(400, "upload projects are scanned by uploading a ZIP to /scans/upload")
-    s = Scan(organization_id=ctx.org_id, project_id=p.id, options=_clean_options(opts or ScanOptions()), created_by=ctx.user.id)
+    o = _clean_options(opts or ScanOptions())
+    s = Scan(organization_id=ctx.org_id, project_id=p.id, options=o, ref_override=o.get("ref", ""), created_by=ctx.user.id)
     db.add(s)
     db.commit()
     mode = enqueue_scan(s.id)
@@ -111,6 +119,105 @@ def list_scans(project_id: str, ctx: OrgContext = Depends(org_context), db: Sess
     get_owned(db, Project, project_id, ctx)
     return [scan_out(s) for s in db.execute(select(Scan).where(Scan.project_id == project_id, Scan.organization_id == ctx.org_id)
                                             .order_by(Scan.created_at.desc())).scalars()]
+
+
+# ---------------------------------------------------------------- pipelines (one GitHub Actions workflow file = one pipeline)
+
+SEVERITIES = ("critical", "high", "medium", "low", "info")
+
+
+def _is_repo_setting(f: Finding) -> bool:
+    """Findings about repository/org settings (branch protection, token defaults…) apply to every pipeline."""
+    return not f.file_path or f.file_path.startswith("(")
+
+
+def _paths_by_workflow(scan: Scan) -> dict[str, list[dict]]:
+    g = scan.attack_graph or {}
+    wf_of = {n["id"]: n["workflow"] for n in g.get("nodes", []) if n.get("workflow")}
+    out: dict[str, list[dict]] = {}
+    for p in g.get("paths", []):
+        for wf in sorted({wf_of[n] for n in p.get("nodes", []) if n in wf_of}):
+            out.setdefault(wf, []).append(p)
+    return out
+
+
+def _sev_counts(fs: list[Finding]) -> dict[str, int]:
+    c = dict.fromkeys(SEVERITIES, 0)
+    for f in fs:
+        c[f.severity] = c.get(f.severity, 0) + 1
+    return c
+
+
+def _pipeline_summary(wf: dict, fs: list[Finding], n_paths: int) -> dict:
+    jobs = wf.get("jobs") or []
+    return {
+        "path": wf["path"], "name": wf.get("name") or wf["path"], "error": wf.get("error"),
+        "triggers": wf.get("triggers") or [], "external_triggers": wf.get("external_triggers") or [],
+        "privileged_triggers": wf.get("privileged_triggers") or [],
+        "jobs": len(jobs), "secrets": sorted({s for j in jobs for s in (j.get("secrets") or [])}),
+        "self_hosted": any(j.get("self_hosted") for j in jobs),
+        "write_access": any(j.get("write_scopes") for j in jobs),
+        "deploys": any(j.get("deploy_indicators") for j in jobs),
+        "findings": len(fs), "open_findings": sum(1 for f in fs if f.triage_status in ("open", "confirmed")),
+        "severity_counts": _sev_counts(fs), "max_risk": max((f.risk_score for f in fs), default=0.0),
+        "attack_paths": n_paths,
+    }
+
+
+@router.get("/projects/{project_id}/pipelines")
+def project_pipelines(project_id: str, ctx: OrgContext = Depends(org_context), db: Session = Depends(get_db)):
+    """Pipelines (workflow files) found by the project's latest completed scan, riskiest first."""
+    get_owned(db, Project, project_id, ctx)
+    s = db.execute(select(Scan).where(Scan.project_id == project_id, Scan.organization_id == ctx.org_id, Scan.status == "completed", Scan.ref_override == "")
+                   .order_by(Scan.created_at.desc()).limit(1)).scalar_one_or_none()
+    if not s:
+        return {"scan": None, "pipelines": [], "repo_setting_findings": 0, "other_ci_systems": []}
+    inv = s.inventory or {}
+    fs = list(db.execute(select(Finding).where(Finding.scan_id == s.id, Finding.organization_id == ctx.org_id)).scalars())
+    by_file: dict[str, list[Finding]] = {}
+    for f in fs:
+        by_file.setdefault(f.file_path, []).append(f)
+    paths = _paths_by_workflow(s)
+    rows = [_pipeline_summary(wf, by_file.get(wf["path"], []), len(paths.get(wf["path"], []))) for wf in inv.get("workflows", [])]
+    rows.sort(key=lambda r: (-r["max_risk"], -r["findings"], r["path"]))
+    return {"scan": {"id": s.id, "created_at": s.created_at.isoformat(), "commit_sha": s.commit_sha, "posture_score": s.posture_score},
+            "pipelines": rows, "repo_setting_findings": sum(1 for f in fs if _is_repo_setting(f)),
+            "other_ci_systems": inv.get("other_ci_systems", [])}
+
+
+@router.get("/scans/{scan_id}/pipeline")
+def pipeline_detail(scan_id: str, path: str = Query(..., min_length=1, max_length=500),
+                    ctx: OrgContext = Depends(org_context), db: Session = Depends(get_db)):
+    """Analysis of one pipeline: its jobs, actions, findings, the repository settings that affect it, and its attack paths."""
+    s = get_owned(db, Scan, scan_id, ctx)
+    inv = s.inventory or {}
+    wf = next((w for w in inv.get("workflows", []) if w.get("path") == path), None)
+    if wf is None:
+        raise HTTPException(404, "pipeline not found in this scan")
+    base = select(Finding).where(Finding.scan_id == s.id, Finding.organization_id == ctx.org_id)
+    fs = list(db.execute(base.where(Finding.file_path == path).order_by(Finding.risk_score.desc(), Finding.line)).scalars())
+    repo = [f for f in db.execute(base.order_by(Finding.risk_score.desc())).scalars() if _is_repo_setting(f)]
+    paths = _paths_by_workflow(s).get(path, [])
+    on_path = {n for p in paths for n in p.get("nodes", [])}
+    g = s.attack_graph or {}
+    cats: dict[str, int] = {}
+    for f in fs:
+        cats[f.category] = cats.get(f.category, 0) + 1
+    p = db.get(Project, s.project_id)
+    return {
+        "scan": {"id": s.id, "created_at": s.created_at.isoformat(), "commit_sha": s.commit_sha},
+        "project": {"id": p.id, "name": p.name, "repo_full_name": p.repo_full_name, "source_type": p.source_type},
+        "summary": _pipeline_summary(wf, fs, len(paths)),
+        "workflow": wf,
+        "actions": [a for a in inv.get("actions", []) if path in (a.get("workflows") or [])],
+        "findings": [finding_to_dict(f) for f in fs],
+        "categories": dict(sorted(cats.items())),
+        "repo_setting_findings": [finding_to_dict(f) for f in repo],
+        "attack_paths": paths,
+        "graph": {"nodes": [n for n in g.get("nodes", []) if n["id"] in on_path],
+                  "edges": [e for e in g.get("edges", []) if e["source"] in on_path and e["target"] in on_path]},
+        "pipelines": [{"path": w["path"], "name": w.get("name") or w["path"]} for w in inv.get("workflows", [])],
+    }
 
 
 @router.get("/scans/{scan_id}")

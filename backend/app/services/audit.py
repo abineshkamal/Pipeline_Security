@@ -10,9 +10,14 @@ log = logging.getLogger("pipelinetrust.audit")
 def record(db, org_id: str | None, user, action: str, target: str = "", details: dict | None = None, ip: str = "") -> None:
     """Append an audit event. Never stores secrets - callers pass only identifiers / metadata."""
     try:
-        db.add(AuditLog(organization_id=org_id, user_id=getattr(user, "id", None), user_email=getattr(user, "email", "") or "system",
-                        action=action, target=target[:300], details=details or {}, ip=ip[:64]))
+        row = AuditLog(organization_id=org_id, user_id=getattr(user, "id", None), user_email=getattr(user, "email", "") or "system",
+                       action=action, target=target[:300], details=details or {}, ip=ip[:64])
+        db.add(row)
         db.commit()
+        from .siem import emit  # late import: siem -> monitoring -> ... imports audit
+
+        emit(org_id, "audit", {"id": row.id, "action": action, "target": row.target, "user": row.user_email, "ip": row.ip,
+                               "details": row.details, "at": row.created_at.isoformat() if row.created_at else None})
     except Exception:  # noqa: BLE001 - auditing failure must not break the request
         db.rollback()
         log.exception("audit write failed")

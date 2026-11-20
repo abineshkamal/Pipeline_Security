@@ -7,6 +7,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="pt-test-"))
 os.environ["PT_DATA_DIR"] = str(_TMP)
 os.environ["PT_DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["PT_LLM_PROVIDER"] = "none"
+os.environ["PT_SCHEDULER_ENABLED"] = "false"  # tests call scheduler.run_due() directly
+os.environ["PT_ALLOW_PRIVATE_WEBHOOKS"] = "true"  # no DNS lookups for example.com webhook hosts
 os.environ.setdefault("PT_TOOLS_DIR", r"E:\tools\pt-bin")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

@@ -134,6 +134,15 @@ class FakeProvider(LLMProvider):
         elif task == "remediation":
             out = {"fixes": [{"finding_id": f["id"], "explanation": "fake fix", "patch": "permissions:\n  contents: read"}
                              for f in data.get("findings", [])]}
+        elif task == "ask":
+            fs = data.get("findings") or []
+            real = f"[F:{fs[0]['id']}]" if fs else ""
+            out = {"answer": f"Fake answer citing {real} and an invented finding [F:HALLUCINATED-ID] and [AP:AP-99]."}
+        elif task == "policy":
+            pid = data.get("suggested_id", "ORG-AI-0001")
+            out = {"yaml": "\n".join([f"id: {pid}", "title: Fake drafted policy", "severity: high", "category: CICD-SEC-7", "target: job",
+                                      "when:", "  - {field: self_hosted, equals: true}", 'message: "Job {id} uses a self-hosted runner"', ""]),
+                   "explanation": "fake explanation"}
         elif task == "summary":
             out = {"executive_summary": "Fake executive summary.", "top_risks": ["fake risk"], "recommended_actions": ["fake action"]}
         else:

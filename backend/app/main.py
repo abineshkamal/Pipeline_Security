@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import update
 
-from .api import auth, projects, scans
+from .api import analysis, auth, enterprise, exceptions, governance, insights, portfolio, projects, scans
 from .config import BASE_DIR, get_settings
 from .db import SessionLocal
 from .models import Scan, utcnow
@@ -45,14 +45,18 @@ async def lifespan(_app: FastAPI):
     if get_settings().auto_migrate:
         run_migrations()
     recover_interrupted()
+    from .services import scheduler
+
+    scheduler.start()
     yield
+    scheduler.stop()
 
 
 s = get_settings()
 app = FastAPI(title="PipelineTrust API", version="1.0.0", description="AI-Powered CI/CD Security Assurance (OWASP Top 10 CI/CD)",
               lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=s.cors_origins, allow_credentials=False,
-                   allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type", "X-Org-Id"])
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type", "X-Org-Id"])
 
 
 @app.middleware("http")
@@ -82,6 +86,12 @@ async def unhandled(_request: Request, exc: Exception):
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(scans.router)
+app.include_router(insights.router)
+app.include_router(governance.router)
+app.include_router(portfolio.router)
+app.include_router(exceptions.router)
+app.include_router(analysis.router)
+app.include_router(enterprise.router)
 
 
 @app.get("/api/health")

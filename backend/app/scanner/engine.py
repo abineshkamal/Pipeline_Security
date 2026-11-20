@@ -33,6 +33,7 @@ class AssessmentResult:
     attack_graph: dict
     coverage_notes: list[str] = field(default_factory=list)
     sbom_path: str | None = None
+    workflow_sources: dict[str, str] = field(default_factory=dict)  # path -> text, kept so fixes can be generated later
 
 
 def load_context(root: Path, metadata: RepoMetadata, options: dict | None = None) -> ScanContext:
@@ -77,16 +78,17 @@ def build_inventory(ctx: ScanContext) -> dict:
                 "deploy_indicators": job_deploy_indicators(job)[:5],
             })
             uses_list = [(s.uses, s.key_line("uses")) for s in job.steps if s.uses] + ([(job.uses, job.key_line("uses"))] if job.uses else [])
-            for uses, _line in uses_list:
+            for uses, uline in uses_list:
                 ref = parse_uses(uses)
                 if not ref or ref.kind == "local":
                     continue
                 key = uses
                 a = actions.setdefault(key, {"uses": uses, "kind": ref.kind, "owner": ref.owner, "action": ref.slug if ref.kind != "docker" else ref.path,
                                              "ref": ref.ref, "sha_pinned": ref.is_sha_pinned, "first_party": ref.is_first_party,
-                                             "workflows": set(), "count": 0})
+                                             "workflows": set(), "count": 0, "occurrences": []})
                 a["workflows"].add(wf.path)
                 a["count"] += 1
+                a["occurrences"].append({"workflow": wf.path, "job": job.id, "line": uline})
         wfs.append(entry)
     manifests = [f for f in ctx.files if f.rsplit("/", 1)[-1] in ("package.json", "requirements.txt", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "composer.json", "Dockerfile")]
     md = ctx.metadata
@@ -101,7 +103,15 @@ def build_inventory(ctx: ScanContext) -> dict:
         "other_ci_systems": detect_other_ci(ctx.files),
         "manifests": manifests[:200],
         "api_collection": {k: {"status": v.status, "detail": v.detail} for k, v in md.collected.items()},
+        "secret_metadata": _secret_metadata(md),
     }
+
+
+def _secret_metadata(md: RepoMetadata) -> dict:
+    r = md.collected.get("secret_metadata")
+    if r is None:
+        return {"status": "skipped", "detail": "offline (ZIP) assessment", "secrets": []}
+    return {"status": r.status, "detail": r.detail, "secrets": r.data if r.status == "ok" else []}
 
 
 def _corroborate(findings: list[FindingResult]) -> list[FindingResult]:
@@ -158,6 +168,16 @@ def run_assessment(root: Path, metadata: RepoMetadata, options: dict | None = No
             "finding_count": len(outcome.findings), "data_sources": cls.data_sources,
         })
 
+    # Organization-defined policies (policy-as-code) run against the same inventory the UI shows.
+    inventory = build_inventory(ctx)
+    custom = options.get("custom_policies") or []
+    if custom:
+        from .policies import evaluate_policies
+        progress("Evaluating organization policies")
+        p_controls, p_findings = evaluate_policies(custom, inventory)
+        controls.extend(p_controls)
+        findings.extend(p_findings)
+
     findings = _corroborate(findings)
     # Drop info-level noise from scoring but keep it as evidence.
     for f in findings:
@@ -184,13 +204,15 @@ def run_assessment(root: Path, metadata: RepoMetadata, options: dict | None = No
 
     summary = summarize(controls, findings)
     summary["coverage_notes"] = coverage_notes
-    inventory = build_inventory(ctx)
+    if custom:
+        summary["policies_applied"] = [p.get("id") for p in custom]
     progress("Building attack graph")
     graph = build_attack_graph(ctx, findings)
     findings.sort(key=lambda f: (-f.risk_score, f.category, f.file_path, f.line or 0))
     sbom = (ctx.tool_results.get("syft") or {}).get("sbom_path")
     return AssessmentResult(inventory=inventory, controls=controls, findings=findings, tool_runs=tool_log, summary=summary,
-                            attack_graph=graph, coverage_notes=coverage_notes, sbom_path=sbom)
+                            attack_graph=graph, coverage_notes=coverage_notes, sbom_path=sbom,
+                            workflow_sources={w.path: w.text for w in ctx.workflows if w.text})
 
 
 def build_inventory_notes(ctx: ScanContext) -> list[str]:
@@ -209,6 +231,6 @@ def build_inventory_notes(ctx: ScanContext) -> list[str]:
         notes.append("Offline (ZIP) assessment: repository settings (branch protection, environments, token defaults, collaborators) are NOT ASSESSED.")
     else:
         for k, v in ctx.metadata.collected.items():
-            if v.status in ("forbidden", "error"):
+            if v.status in ("forbidden", "error") and k != "secret_metadata":  # rotation dates are optional
                 notes.append(f"GitHub API `{k}`: {v.status} ({v.detail}) - dependent controls are NOT ASSESSED or need manual validation.")
     return notes

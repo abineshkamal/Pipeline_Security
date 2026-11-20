@@ -2,8 +2,10 @@
 
     python -m app.cli scan PATH [--github owner/repo] [--format table|json|sarif|html] [--out FILE]
                        [--tools gitleaks,actionlint,...|none] [--fail-on high] [--ai]
+                       [--policies FILE_OR_DIR] [--fail-on-policy] [--max-attack-paths N] [--summary FILE]
 
-Exit code 1 when any open finding is at or above --fail-on severity (for use as a CI gate).
+Exit code 1 when the gate fails: any finding at or above --fail-on, any custom-policy violation with --fail-on-policy,
+or more attack paths than --max-attack-paths. --summary writes a Markdown summary (e.g. to $GITHUB_STEP_SUMMARY).
 """
 from __future__ import annotations
 
@@ -31,6 +33,10 @@ def main(argv=None) -> int:
     sc.add_argument("--tools", default=",".join(DEFAULT_TOOLS), help="comma list or 'none'")
     sc.add_argument("--fail-on", choices=["critical", "high", "medium", "low", "none"], default="none")
     sc.add_argument("--ai", action="store_true", help="run AI agents (PT_LLM_PROVIDER / API key required, else deterministic)")
+    sc.add_argument("--policies", help="custom policy file (.yml/.yaml/.json, several documents allowed) or directory of them")
+    sc.add_argument("--fail-on-policy", action="store_true", help="fail when any custom policy is violated")
+    sc.add_argument("--max-attack-paths", type=int, default=None, help="fail when more attack paths than this are found")
+    sc.add_argument("--summary", help="write a Markdown gate summary to this file (appends)")
     sub.add_parser("rules", help="list detection rules")
     a = ap.parse_args(argv)
 
@@ -41,6 +47,13 @@ def main(argv=None) -> int:
 
     opts = {"tools": [] if a.tools == "none" else [t for t in a.tools.split(",") if t]}
     opts["run_tools"] = bool(opts["tools"])
+    if a.policies:
+        try:
+            opts["custom_policies"] = load_policy_files(Path(a.policies))
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"[*] {len(opts['custom_policies'])} custom policy(ies) loaded", file=sys.stderr)
     tmp = None
     resolver = None
     if a.github:
@@ -93,11 +106,62 @@ def main(argv=None) -> int:
         sys.stdout.write(out + "\n")
     if tmp:
         tmp.cleanup()
-    if a.fail_on != "none":
-        th = SEVERITY_ORDER[a.fail_on]
-        if any(SEVERITY_ORDER.get(f.severity, 0) >= th for f in res.findings):
-            return 1
-    return 0
+    reasons = gate_reasons(res, a.fail_on, a.fail_on_policy, a.max_attack_paths)
+    if a.summary:
+        with open(a.summary, "a", encoding="utf-8") as fh:
+            fh.write(gate_summary(res, reasons))
+    for r in reasons:
+        print(f"[!] gate failed: {r}", file=sys.stderr)
+    return 1 if reasons else 0
+
+
+def load_policy_files(path: Path) -> list[dict]:
+    import yaml
+
+    from .scanner.policies import PolicyError, parse_policy
+
+    files = sorted(x for x in path.rglob("*") if x.suffix in (".yml", ".yaml", ".json")) if path.is_dir() else [path]
+    out = []
+    for f in files:
+        text = f.read_text("utf-8")
+        docs = [d for d in yaml.safe_load_all(text) if d]
+        for d in docs:
+            try:
+                out.append(parse_policy(yaml.safe_dump(d)))
+            except PolicyError as exc:
+                raise ValueError(f"{f}: {exc}") from exc
+    return out
+
+
+def gate_reasons(res, fail_on: str, fail_on_policy: bool, max_paths: int | None) -> list[str]:
+    reasons = []
+    if fail_on != "none":
+        th = SEVERITY_ORDER[fail_on]
+        hits = [f for f in res.findings if SEVERITY_ORDER.get(f.severity, 0) >= th]
+        if hits:
+            reasons.append(f"{len(hits)} finding(s) at or above {fail_on}")
+    if fail_on_policy:
+        pol = [f for f in res.findings if not f.rule_id.startswith("PT-")]
+        if pol:
+            reasons.append(f"{len(pol)} custom policy violation(s): " + ", ".join(sorted({f.rule_id for f in pol})))
+    n = len(res.attack_graph.get("paths", []))
+    if max_paths is not None and n > max_paths:
+        reasons.append(f"{n} attack path(s), limit is {max_paths}")
+    return reasons
+
+
+def gate_summary(res, reasons: list[str]) -> str:
+    sc = res.summary.get("severity_counts", {})
+    lines = [f"## PipelineTrust: {'❌ gate failed' if reasons else '✅ gate passed'}", "",
+             f"Posture **{res.summary.get('posture_score')}** (grade {res.summary.get('grade')}) · "
+             + " · ".join(f"{k} {sc.get(k, 0)}" for k in ("critical", "high", "medium", "low"))
+             + f" · attack paths {len(res.attack_graph.get('paths', []))}", ""]
+    lines += [f"- {r}" for r in reasons]
+    top = sorted(res.findings, key=lambda f: -SEVERITY_ORDER.get(f.severity, 0))[:15]
+    if top:
+        lines += ["", "| Severity | Rule | Finding | Location |", "|---|---|---|---|"]
+        lines += [f"| {f.severity} | {f.rule_id} | {f.title.replace('|', '/')} | `{f.file_path}{':' + str(f.line) if f.line else ''}` |" for f in top]
+    return "\n".join(lines) + "\n\n"
 
 
 def _table(res) -> str:

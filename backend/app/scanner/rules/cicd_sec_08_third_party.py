@@ -3,17 +3,11 @@ from __future__ import annotations
 
 import re
 
+from ..advisories import VERDICT_TEXT, all_advisories, match
 from ..gha import parse_uses
 from ..model import Rule, RuleOutcome, Status, Workflow, WorkflowRule
 
 PIN_DOCS = "https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions"
-
-# Actions with publicly documented supply-chain compromises (tags repointed to malicious commits).
-KNOWN_COMPROMISED = {
-    "tj-actions/changed-files": ("CVE-2025-30066 - all tags repointed to a secret-dumping commit (March 2025)",
-                                 {"0e58ed8671d6b60d0890c21b07f8835ace038e67"}),
-    "reviewdog/action-setup": ("CVE-2025-30154 - v1 tag repointed to a malicious commit (March 2025)", set()),
-}
 
 
 def _iter_uses(wf: Workflow):
@@ -140,21 +134,16 @@ class KnownCompromisedActions(WorkflowRule):
     false_positives = "A SHA pinned to a reviewed post-incident commit is safe (reported as info)."
 
     def check(self, ctx, wf: Workflow):
+        advisories = all_advisories(ctx.options.get("custom_advisories"))
         out = []
         for job, step, uses, line in _iter_uses(wf):
-            ref = parse_uses(uses)
-            if not ref:
+            hit = match(uses, advisories)
+            if not hit:
                 continue
-            key = f"{ref.owner}/{ref.repo}".lower()
-            if key in KNOWN_COMPROMISED:
-                why, bad_shas = KNOWN_COMPROMISED[key]
-                if ref.ref in bad_shas:
-                    sev = "critical"
-                elif ref.is_sha_pinned:
-                    sev = "info"
-                else:
-                    sev = "high"
-                out.append(self.finding(f"`{uses}` - {why}.", wf=wf, job=job, line=line, severity=sev, key=f"{job.id}:{uses}"))
+            adv, sev, verdict = hit
+            out.append(self.finding(f"`{uses}` {VERDICT_TEXT[verdict]} - {adv['id']}: {adv['title']}.", wf=wf, job=job, line=line,
+                                    severity=sev, key=f"{job.id}:{uses}", advisory=adv["id"], verdict=verdict,
+                                    window=[adv.get("window_start"), adv.get("window_end")]))
         return out
 
 

@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import Shell, { canEdit, useMe } from "@/components/Shell";
 import { ErrorBox, Loading } from "@/components/ui";
-import { api, fmtDate } from "@/lib/api";
+import { api, fmtDate, type TicketIntegration, type TicketLink } from "@/lib/api";
+import { ApiTokens, SiemSinks } from "@/components/enterprise";
 
 interface Member { user_id: string; email: string; full_name: string; role: string }
 interface Cred { id: string; name: string; provider: string; hint: string; created_at: string }
@@ -110,6 +111,70 @@ function AuditLog() {
   );
 }
 
-export default function Page() {
-  return <Shell><h1 className="h4 mb-3">Settings</h1><Members /><Credentials /><AuditLog /></Shell>;
+function Ticketing() {
+  const { role } = useMe();
+  const admin = role === "admin";
+  const empty = { name: "", kind: "jira", base_url: "", target: "", issue_type: "Bug", username: "", secret: "", close_action: "" };
+  const [list, setList] = useState<TicketIntegration[] | null>(null);
+  const [links, setLinks] = useState<TicketLink[]>([]);
+  const [f, setF] = useState(empty);
+  const [err, setErr] = useState<string | null>(null);
+  const [res, setRes] = useState<Record<string, string>>({});
+  const load = () => {
+    api.get<TicketIntegration[]>("/api/integrations/tickets").then(setList).catch((e) => setErr(e.message));
+    api.get<TicketLink[]>("/api/tickets").then(setLinks).catch(() => setLinks([]));
+  };
+  useEffect(() => { load(); }, []);
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault(); setErr(null);
+    try { await api.post("/api/integrations/tickets", f); setF(empty); load(); } catch (x) { setErr((x as Error).message); }
+  };
+  const test = async (i: TicketIntegration) => {
+    setRes((r) => ({ ...r, [i.id]: "Testing…" }));
+    try { const r = await api.post<{ ok: boolean; detail: string }>(`/api/integrations/tickets/${i.id}/test`); setRes((x) => ({ ...x, [i.id]: `${r.ok ? "OK" : "Failed"} · ${r.detail}` })); }
+    catch (x) { setRes((r) => ({ ...r, [i.id]: (x as Error).message })); }
+  };
+  const del = async (i: TicketIntegration) => { if (confirm(`Remove ${i.name}? Tickets already created stay in ${i.kind}.`)) { await api.del(`/api/integrations/tickets/${i.id}`); load(); } };
+  const jira = f.kind === "jira";
+  return (
+    <div className="card mb-3"><div className="card-body">
+      <h2 className="h6">Ticketing (Jira / ServiceNow)</h2>
+      <p className="small text-secondary">Open tickets from any finding. Tickets follow the finding across scans and are commented on and closed automatically when a scan no longer finds it;
+        they reopen here if the finding comes back. Credentials are stored encrypted.</p>
+      <ErrorBox error={err} />
+      {list && list.length > 0 && <table className="table table-sm small align-middle">
+        <thead><tr><th>Name</th><th>System</th><th>Target</th><th>Closes with</th><th /></tr></thead>
+        <tbody>{list.map((i) => <tr key={i.id}><td><b>{i.name}</b>{res[i.id] && <div className="text-secondary">{res[i.id]}</div>}</td>
+          <td>{i.kind === "jira" ? "Jira" : "ServiceNow"} <span className="text-secondary">{i.base_url}</span></td><td><code>{i.target}</code>{i.kind === "jira" && ` · ${i.issue_type}`}</td>
+          <td>{i.close_action || <span className="text-secondary">comment only</span>}</td>
+          <td className="text-nowrap">{admin && <><button className="btn btn-sm btn-outline-primary me-1" onClick={() => test(i)}>Test</button>
+            <button className="btn btn-sm btn-link text-danger" onClick={() => del(i)}>Remove</button></>}</td></tr>)}</tbody></table>}
+      {admin && <form onSubmit={add} className="row g-2 small align-items-end">
+        <div className="col-6 col-md-2"><label className="form-label" htmlFor="tk">System</label><select id="tk" className="form-select form-select-sm" value={f.kind}
+          onChange={(e) => setF({ ...f, kind: e.target.value, target: e.target.value === "jira" ? "" : "incident" })}><option value="jira">Jira</option><option value="servicenow">ServiceNow</option></select></div>
+        <div className="col-6 col-md-2"><label className="form-label" htmlFor="tn">Name</label><input id="tn" className="form-control form-control-sm" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
+        <div className="col-12 col-md-4"><label className="form-label" htmlFor="tu">Base URL</label><input id="tu" type="url" className="form-control form-control-sm" required
+          placeholder={jira ? "https://your-site.atlassian.net" : "https://your-instance.service-now.com"} value={f.base_url} onChange={(e) => setF({ ...f, base_url: e.target.value })} /></div>
+        <div className="col-6 col-md-2"><label className="form-label" htmlFor="tt">{jira ? "Project key" : "Table"}</label><input id="tt" className="form-control form-control-sm" required
+          placeholder={jira ? "SEC" : "incident"} value={f.target} onChange={(e) => setF({ ...f, target: e.target.value })} /></div>
+        {jira && <div className="col-6 col-md-2"><label className="form-label" htmlFor="ti">Issue type</label><input id="ti" className="form-control form-control-sm" value={f.issue_type} onChange={(e) => setF({ ...f, issue_type: e.target.value })} /></div>}
+        <div className="col-6 col-md-3"><label className="form-label" htmlFor="tw">{jira ? "Account email" : "User"}</label><input id="tw" className="form-control form-control-sm" required value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} /></div>
+        <div className="col-6 col-md-3"><label className="form-label" htmlFor="ts">{jira ? "API token" : "Password"}</label><input id="ts" type="password" autoComplete="new-password" className="form-control form-control-sm" required value={f.secret} onChange={(e) => setF({ ...f, secret: e.target.value })} /></div>
+        <div className="col-6 col-md-3"><label className="form-label" htmlFor="tc">{jira ? "Close with transition (optional)" : "Close with state value (optional)"}</label>
+          <input id="tc" className="form-control form-control-sm" placeholder={jira ? "Done" : "6"} value={f.close_action} onChange={(e) => setF({ ...f, close_action: e.target.value })} /></div>
+        <div className="col-6 col-md-3"><button className="btn btn-sm btn-primary">Add integration</button></div>
+      </form>}
+      {links.length > 0 && <><h3 className="h6 mt-3">Tickets ({links.filter((l) => l.status === "open").length} open)</h3>
+        <div className="table-responsive" style={{ maxHeight: 300 }}><table className="table table-sm small mb-0">
+          <thead><tr><th>Ticket</th><th>Project</th><th>Finding</th><th>Status</th><th>Last sync</th></tr></thead>
+          <tbody>{links.map((l) => <tr key={l.id}><td><a href={l.url} target="_blank" rel="noreferrer">{l.key}</a></td><td>{l.project}</td><td>{l.rule_id} {l.title}</td>
+            <td><span className={`badge ${l.status === "open" ? "bg-warning text-dark" : "bg-success"}`}>{l.status}</span></td><td className="text-secondary">{l.sync_detail || fmtDate(l.created_at)}</td></tr>)}</tbody>
+        </table></div></>}
+    </div></div>
+  );
 }
+
+export default function Page() {
+  return <Shell><h1 className="h4 mb-3">Settings</h1><Members /><Credentials /><ApiTokens /><Ticketing /><SiemSinks /><AuditLog /></Shell>;
+}
+

@@ -1,0 +1,30 @@
+# Block pull requests that make pipelines less safe: critical findings, organization policy violations or new attack paths.
+# Replace OWNER/Pipeline_Security@<sha> with this repository pinned to a commit SHA.
+name: PipelineTrust gate
+on:
+  pull_request:
+    paths: [".github/**", ".pipelinetrust/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload only
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: pt
+        uses: OWNER/Pipeline_Security@<sha>
+        with:
+          fail-on: critical
+          policies: .pipelinetrust/policies    # export from the Policies page or write your own
+          max-attack-paths: "0"
+      - uses: github/codeql-action/upload-sarif@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        if: always()
+        with:
+          sarif_file: ${{ steps.pt.outputs.sarif }}

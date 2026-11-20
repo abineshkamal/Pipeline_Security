@@ -1,13 +1,15 @@
 """GitHub connector: read-only REST API collection + zipball download.
 
 Recommended token: fine-grained PAT with read-only `Contents`, `Metadata`, `Actions`, `Administration` (read) and
-`Environments` (read) on the selected repositories. Every call is a GET; nothing is written to GitHub.
+`Environments` (read) on the selected repositories. Add `Secrets` (read) to see secret rotation dates (names and
+dates only - GitHub never returns secret values). Every call is a GET; nothing is written to GitHub.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -75,11 +77,30 @@ class GitHubClient:
                 raise ConnectorError(f"cannot list repositories: HTTP {r.status_code}")
             batch = r.json()
             out.extend({"full_name": x["full_name"], "private": x["private"], "default_branch": x.get("default_branch"),
-                        "archived": x.get("archived"), "pushed_at": x.get("pushed_at"), "visibility": x.get("visibility")} for x in batch)
+                        "archived": x.get("archived"), "fork": x.get("fork"), "owner": (x.get("owner") or {}).get("login"), "pushed_at": x.get("pushed_at"), "visibility": x.get("visibility")} for x in batch)
             if len(batch) < 100:
                 break
             page += 1
         return out[:limit]
+
+    def list_owner_repos(self, owner: str, limit: int = 300) -> list[dict]:
+        """Repositories of an organization, falling back to a user account of the same name."""
+        try:
+            return self.list_repos(owner, limit)
+        except ConnectorError:
+            path, out, page = f"/users/{owner}/repos", [], 1
+            while len(out) < limit:
+                r = self.get(path, per_page=100, page=page, sort="pushed")
+                if r.status_code != 200:
+                    raise ConnectorError(f"cannot list repositories of {owner}: HTTP {r.status_code}") from None
+                batch = r.json()
+                out.extend({"full_name": x["full_name"], "private": x["private"], "default_branch": x.get("default_branch"),
+                            "archived": x.get("archived"), "fork": x.get("fork"), "owner": (x.get("owner") or {}).get("login"),
+                            "pushed_at": x.get("pushed_at"), "visibility": x.get("visibility")} for x in batch)
+                if len(batch) < 100:
+                    break
+                page += 1
+            return out[:limit]
 
     def list_workflow_files(self, full_name: str, ref: str | None = None) -> list[dict]:
         r = self.result(f"/repos/{full_name}/contents/.github/workflows", none_on_404=True, **({"ref": ref} if ref else {}))
@@ -118,8 +139,33 @@ class GitHubClient:
         md.collected["collaborators"] = self.result(f"/repos/{full_name}/collaborators", per_page=100)
         if md.owner_type == "Organization":
             md.collected["org"] = self.result(f"/orgs/{full_name.split('/')[0]}")
+        md.collected["secret_metadata"] = self.secret_metadata(full_name, envs.data if envs.status == "ok" else [])
         md.collected["_ref"] = ApiResult("ok", {"ref": branch})
         return md
+
+    def secret_metadata(self, full_name: str, environments: list[dict]) -> ApiResult:
+        """Names and created/updated dates of the repository, organization and environment secrets (never values).
+        Needs the fine-grained `Secrets: read` permission; without it rotation age is reported as unknown."""
+        out: list[dict] = []
+        repo = self.result(f"/repos/{full_name}/actions/secrets", per_page=100)
+        if repo.status != "ok":
+            return ApiResult(repo.status, detail=repo.detail)
+        for x in repo.data.get("secrets", []):
+            out.append({"name": x["name"], "scope": "repository", "created_at": x.get("created_at"), "updated_at": x.get("updated_at")})
+        org = self.result(f"/repos/{full_name}/actions/organization-secrets", per_page=100)
+        if org.status == "ok":
+            for x in org.data.get("secrets", []):
+                out.append({"name": x["name"], "scope": "organization", "created_at": x.get("created_at"), "updated_at": x.get("updated_at")})
+        for env in environments[:20]:
+            name = env.get("name")
+            if not name:
+                continue
+            r = self.result(f"/repos/{full_name}/environments/{quote(name, safe='')}/secrets", per_page=100)
+            if r.status == "ok":
+                for x in r.data.get("secrets", []):
+                    out.append({"name": x["name"], "scope": f"environment:{name}", "created_at": x.get("created_at"),
+                                "updated_at": x.get("updated_at")})
+        return ApiResult("ok", out)
 
     def download_zipball(self, full_name: str, ref: str, dest: Path, max_bytes: int) -> tuple[Path, str]:
         sha = self.resolve_sha(*full_name.split("/", 1), ref) or ""

@@ -6,7 +6,7 @@ export function SevBadge({ s }: { s: Severity | string }) {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  PASS: "Pass", FAIL: "Fail", NOT_ASSESSED: "Not assessed", NOT_APPLICABLE: "N/A", NEEDS_MANUAL_VALIDATION: "Manual validation",
+  PASS: "Pass", FAIL: "Fail", NOT_ASSESSED: "Not assessed", NOT_APPLICABLE: "N/A", NEEDS_MANUAL_VALIDATION: "Manual validation", PARTIAL: "Partial",
   completed: "Completed", running: "Running", queued: "Queued", failed: "Failed",
 };
 export function StatusBadge({ s }: { s: Status | string }) {
